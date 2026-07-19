@@ -110,7 +110,7 @@ Question just asked: {question}
 def is_safe_sql(sql):
     lowered = sql.lower().strip()
     forbidden = ["drop", "delete", "update", "insert", "alter", "truncate", "create", "exec", "merge"]
- if not (lowered.startswith("select") or lowered.startswith("with")):
+    if not (lowered.startswith("select") or lowered.startswith("with")):
         return False
     return not any(word in lowered for word in forbidden)
 
@@ -120,7 +120,6 @@ def run_sql_csv(sql, df):
     return list(result.columns), [tuple(r) for r in result.values]
 
 
-# ---- Sidebar ----
 with st.sidebar:
     st.markdown("### 🧭 Settings")
     mode = st.radio("Data source", ["Demo: Spotify data", "Upload your own CSV"])
@@ -134,7 +133,6 @@ with st.sidebar:
         uploaded = st.file_uploader("Upload a CSV", type="csv")
         st.caption("Ask questions about your own data. Nothing is stored.")
 
-# ---- Load the active dataframe ----
 df = None
 if mode == "Demo: Spotify data":
     if os.path.exists("spotify_demo.csv"):
@@ -143,7 +141,6 @@ else:
     if uploaded is not None:
         df = pd.read_csv(uploaded)
 
-# ---- Header ----
 st.markdown('<p class="hero-title">AI BI Co-Pilot</p>', unsafe_allow_html=True)
 st.markdown('<p class="hero-sub">Ask a business question in plain English. The AI writes the SQL, runs it, and explains what it means.</p>', unsafe_allow_html=True)
 
@@ -159,7 +156,6 @@ else:
 
 question = st.text_input("Your question", key="question", placeholder="e.g. How many users are inactive?")
 
-# ---- Run query on button click, store result in session_state ----
 if st.button("Get Answer", key="get_answer_btn"):
     if not question:
         st.warning("Type a question first, or click an example in the sidebar.")
@@ -185,10 +181,8 @@ if st.button("Get Answer", key="get_answer_btn"):
                               "insight": None, "question": question}
         st.session_state["result"] = result
 
-# ---- Render the stored result (persists across chart-toggle reruns) ----
 if "result" in st.session_state:
     r = st.session_state["result"]
-
     st.markdown("### Answer")
     if r["error"]:
         st.error(f"The query could not run: {r['error']}")
@@ -218,7 +212,6 @@ if "result" in st.session_state:
             else:
                 st.area_chart(chart_df)
 
-    # Business insight (the decision layer)
     if r.get("insight") and not r["error"]:
         st.markdown("### What this means")
         st.markdown(f'<div class="insight">{r["insight"]}</div>', unsafe_allow_html=True)
