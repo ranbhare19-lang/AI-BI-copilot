@@ -1,3 +1,5 @@
+![AI BI Co-Pilot screenshot](screenshot.png)
+
 # AI BI Co-Pilot
 
 Ask a business question in plain English. The AI writes the SQL, runs it against real data, and returns the answer with a chart.
