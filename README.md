@@ -1,4 +1,4 @@
-![AI BI COPILOT](screenshot.png)
+
 
 # AI BI Co-Pilot
 
