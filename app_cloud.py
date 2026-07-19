@@ -110,7 +110,7 @@ Question just asked: {question}
 def is_safe_sql(sql):
     lowered = sql.lower().strip()
     forbidden = ["drop", "delete", "update", "insert", "alter", "truncate", "create", "exec", "merge"]
-    if not lowered.startswith("select"):
+ if not (lowered.startswith("select") or lowered.startswith("with")):
         return False
     return not any(word in lowered for word in forbidden)
 
