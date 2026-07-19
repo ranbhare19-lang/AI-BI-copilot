@@ -21,6 +21,8 @@ st.markdown("""
     .badge { display: inline-block; background: rgba(29,158,117,0.12); color: #3FEFB2;
         border: 1px solid rgba(63,239,178,0.3); padding: 6px 16px; border-radius: 20px;
         font-size: 0.9rem; font-weight: 600; margin-bottom: 26px; }
+    .insight { background: rgba(29,158,117,0.08); border-left: 3px solid #1D9E75;
+        border-radius: 6px; padding: 16px 18px; color: #D7E0E8; font-size: 1.05rem; margin-top: 8px; }
     div[data-testid="stTextInput"] input { background: #12161D; border: 1px solid #263039; border-radius: 12px;
         padding: 16px; font-size: 1.2rem; color: #E6EDF3; }
     div[data-testid="stTextInput"] input:focus { border-color: #1D9E75; box-shadow: 0 0 0 3px rgba(29,158,117,0.18); }
@@ -47,6 +49,11 @@ DEMO_EXAMPLES = [
 ]
 
 
+@st.cache_data
+def load_demo():
+    return pd.read_csv("spotify_demo.csv")
+
+
 def set_question(q):
     st.session_state["question"] = q
 
@@ -61,6 +68,22 @@ When matching multi-word text, put % between the words (e.g. '%hip%hop%') so hyp
 Return ONLY the SQL query, no explanation, no markdown, no backticks.
 
 User question: {question}
+"""
+    resp = client.chat.completions.create(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def business_insight(question, columns, rows):
+    preview = ", ".join(columns) + " | " + "; ".join(str(r) for r in rows[:15])
+    prompt = f"""A business analyst asked: "{question}"
+The query returned this result: {preview}
+
+In 2 to 3 sentences, explain what this means for the business and what a decision-maker
+should consider or do next. Be specific and concrete. Do not restate the raw numbers,
+interpret them. Plain language, no jargon.
 """
     resp = client.chat.completions.create(
         model="gpt-5.5",
@@ -115,14 +138,14 @@ with st.sidebar:
 df = None
 if mode == "Demo: Spotify data":
     if os.path.exists("spotify_demo.csv"):
-        df = pd.read_csv("spotify_demo.csv")
+        df = load_demo()
 else:
     if uploaded is not None:
         df = pd.read_csv(uploaded)
 
-# ---- Main ----
+# ---- Header ----
 st.markdown('<p class="hero-title">AI BI Co-Pilot</p>', unsafe_allow_html=True)
-st.markdown('<p class="hero-sub">Ask a business question in plain English. The AI writes the SQL and runs it live against real data.</p>', unsafe_allow_html=True)
+st.markdown('<p class="hero-sub">Ask a business question in plain English. The AI writes the SQL, runs it, and explains what it means.</p>', unsafe_allow_html=True)
 
 if df is not None:
     cols = ", ".join(df.columns)
@@ -136,62 +159,79 @@ else:
 
 question = st.text_input("Your question", key="question", placeholder="e.g. How many users are inactive?")
 
+# ---- Run query on button click, store result in session_state ----
 if st.button("Get Answer", key="get_answer_btn"):
     if not question:
         st.warning("Type a question first, or click an example in the sidebar.")
     elif df is None:
         st.warning("Load the demo or upload a CSV first.")
     else:
-        with st.spinner("Writing SQL and querying the data..."):
+        with st.spinner("Writing SQL, querying the data, and interpreting the result..."):
             sql = question_to_sql(question, cols)
             if not is_safe_sql(sql):
-                error = "Blocked: only read-only SELECT queries are allowed."
-                columns, rows = None, None
+                result = {"sql": sql, "error": "Blocked: only read-only SELECT queries are allowed.",
+                          "columns": None, "rows": None, "insight": None, "question": question}
             else:
                 try:
                     columns, rows = run_sql_csv(sql, df)
-                    error = None
+                    try:
+                        insight = business_insight(question, columns, rows)
+                    except Exception:
+                        insight = None
+                    result = {"sql": sql, "error": None, "columns": columns, "rows": rows,
+                              "insight": insight, "question": question}
                 except Exception as e:
-                    columns, rows, error = None, None, str(e)
+                    result = {"sql": sql, "error": str(e), "columns": None, "rows": None,
+                              "insight": None, "question": question}
+        st.session_state["result"] = result
 
-        st.markdown("### Answer")
-        if error:
-            st.error(f"The query could not run: {error}")
-        elif rows is not None and len(rows) == 1 and len(columns) == 1:
-            val = rows[0][0]
-            col_name = columns[0].lower()
-            money_words = ["salary", "amount", "price", "revenue", "cost", "pay", "usd", "income"]
-            is_money = any(w in col_name for w in money_words)
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                st.metric(columns[0], "No matching data")
-            elif isinstance(val, (int, float)):
-                st.metric(columns[0], f"${val:,.0f}" if is_money else (f"{val:,.2f}" if isinstance(val, float) else f"{val:,}"))
+# ---- Render the stored result (persists across chart-toggle reruns) ----
+if "result" in st.session_state:
+    r = st.session_state["result"]
+
+    st.markdown("### Answer")
+    if r["error"]:
+        st.error(f"The query could not run: {r['error']}")
+    elif r["rows"] is not None and len(r["rows"]) == 1 and len(r["columns"]) == 1:
+        val = r["rows"][0][0]
+        col_name = r["columns"][0].lower()
+        money_words = ["salary", "amount", "price", "revenue", "cost", "pay", "usd", "income"]
+        is_money = any(w in col_name for w in money_words)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            st.metric(r["columns"][0], "No matching data")
+        elif isinstance(val, (int, float)):
+            st.metric(r["columns"][0], f"${val:,.0f}" if is_money else (f"{val:,.2f}" if isinstance(val, float) else f"{val:,}"))
+        else:
+            st.metric(r["columns"][0], val)
+    elif r["rows"] is not None:
+        result_df = pd.DataFrame(r["rows"], columns=r["columns"])
+        st.dataframe(result_df, use_container_width=True)
+        numeric_cols = result_df.select_dtypes(include="number").columns.tolist()
+        text_cols = [c for c in result_df.columns if c not in numeric_cols]
+        if len(result_df) > 1 and len(numeric_cols) >= 1 and len(text_cols) >= 1:
+            chart_df = result_df.set_index(text_cols[0])[numeric_cols]
+            chart_type = st.radio("Chart", ["Bar", "Line", "Area"], horizontal=True, key="chart_type")
+            if chart_type == "Bar":
+                st.bar_chart(chart_df)
+            elif chart_type == "Line":
+                st.line_chart(chart_df)
             else:
-                st.metric(columns[0], val)
-        elif rows is not None:
-            result_df = pd.DataFrame(rows, columns=columns)
-            st.dataframe(result_df, use_container_width=True)
-            numeric_cols = result_df.select_dtypes(include="number").columns.tolist()
-            text_cols = [c for c in result_df.columns if c not in numeric_cols]
-            if len(result_df) > 1 and len(numeric_cols) >= 1 and len(text_cols) >= 1:
-                chart_df = result_df.set_index(text_cols[0])[numeric_cols]
-                chart_type = st.radio("Chart", ["Bar", "Line", "Area"], horizontal=True, key="chart_type")
-                if chart_type == "Bar":
-                    st.bar_chart(chart_df)
-                elif chart_type == "Line":
-                    st.line_chart(chart_df)
-                else:
-                    st.area_chart(chart_df)
+                st.area_chart(chart_df)
 
-        with st.expander("See the SQL the AI wrote"):
-            st.code(sql, language="sql")
+    # Business insight (the decision layer)
+    if r.get("insight") and not r["error"]:
+        st.markdown("### What this means")
+        st.markdown(f'<div class="insight">{r["insight"]}</div>', unsafe_allow_html=True)
 
-        if not error:
-            st.markdown("**You might also ask:**")
-            try:
-                for f in suggest_followups(question, cols):
-                    st.button(f, key=f"fu_{f}", on_click=set_question, args=(f,))
-            except Exception:
-                pass
+    with st.expander("See the SQL the AI wrote"):
+        st.code(r["sql"], language="sql")
 
-st.markdown('<p class="footer">Built by Charulata Ranbhare · Python · OpenAI · SQL Server · Streamlit</p>', unsafe_allow_html=True)
+    if not r["error"] and cols:
+        st.markdown("**You might also ask:**")
+        try:
+            for f in suggest_followups(r["question"], cols):
+                st.button(f, key=f"fu_{f}", on_click=set_question, args=(f,))
+        except Exception:
+            pass
+
+st.markdown('<p class="footer">Built by Charulata Ranbhare · Python · OpenAI · SQL · Streamlit · DuckDB</p>', unsafe_allow_html=True)
