@@ -1,4 +1,4 @@
-![AI BI Co-Pilot screenshot](screenshot.png)
+![AI BI COPILOT](screenshot.png)
 
 # AI BI Co-Pilot
 
@@ -6,7 +6,7 @@ Ask a business question in plain English. The AI writes the SQL, runs it against
 
 ## Live Demo
 
-[Try it here](your-link-will-go-here)
+[Try it here](https://charulata-ai-copilot.streamlit.app/)
 
 ## What it does
 
