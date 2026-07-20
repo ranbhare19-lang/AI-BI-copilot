@@ -65,9 +65,30 @@ def question_to_sql(question, columns):
 Write a single DuckDB SQL query that answers the user's question. Use LIMIT not TOP.
 Prefer LIKE with wildcards for text matching so partial names still match.
 When matching multi-word text, put % between the words (e.g. '%hip%hop%') so hyphens or spaces do not cause a miss.
+Group by only ONE dimension unless the user explicitly asks to break it down by several. Do not combine multiple groupings with UNION.
 Return ONLY the SQL query, no explanation, no markdown, no backticks.
 
 User question: {question}
+"""
+    resp = client.chat.completions.create(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def fix_sql(question, columns, bad_sql, error):
+    prompt = f"""The data is in a table named 'data' with these columns:
+{columns}
+
+This DuckDB SQL query failed:
+{bad_sql}
+
+With this error:
+{error}
+
+Rewrite the query so it runs correctly and still answers: "{question}"
+Return ONLY the corrected SQL query, no explanation, no markdown, no backticks.
 """
     resp = client.chat.completions.create(
         model="gpt-5.5",
@@ -170,14 +191,28 @@ if st.button("Get Answer", key="get_answer_btn"):
             else:
                 try:
                     columns, rows = run_sql_csv(sql, df)
+                    error = None
+                except Exception as e:
+                    # Self-correction: send the error back to the AI and retry once
+                    try:
+                        sql = fix_sql(question, cols, sql, str(e))
+                        if is_safe_sql(sql):
+                            columns, rows = run_sql_csv(sql, df)
+                            error = None
+                        else:
+                            columns, rows, error = None, None, "Blocked after retry: only read-only queries allowed."
+                    except Exception as e2:
+                        columns, rows, error = None, None, str(e2)
+
+                if error is None:
                     try:
                         insight = business_insight(question, columns, rows)
                     except Exception:
                         insight = None
                     result = {"sql": sql, "error": None, "columns": columns, "rows": rows,
                               "insight": insight, "question": question}
-                except Exception as e:
-                    result = {"sql": sql, "error": str(e), "columns": None, "rows": None,
+                else:
+                    result = {"sql": sql, "error": error, "columns": None, "rows": None,
                               "insight": None, "question": question}
         st.session_state["result"] = result
 
