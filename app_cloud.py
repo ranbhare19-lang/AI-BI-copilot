@@ -132,8 +132,7 @@ Question just asked: {question}
 
 
 def verify_result(columns, rows, dataset_rows):
-    """Heuristic reliability checks. Returns (level, messages).
-    level is 'green', 'yellow', or 'red'. Never raises."""
+    """Heuristic reliability checks. Returns (level, messages). Never raises."""
     messages = []
     level = "green"
     try:
@@ -142,22 +141,22 @@ def verify_result(columns, rows, dataset_rows):
 
         result_df = pd.DataFrame(rows, columns=columns)
         n_result_rows = len(result_df)
-
-        # Identify numeric columns
         numeric_cols = result_df.select_dtypes(include="number").columns.tolist()
 
-        # --- Check 1: sample size (columns that look like counts) ---
+        flagged = False
+
+        # Check 1: small sample sizes on count-like columns
         count_like = [c for c in numeric_cols if any(k in c.lower() for k in
-                      ["count", "users", "num", "total", "freq", "n_", "_n", "records", "transactions"])]
+                      ["count", "users", "num", "total", "freq", "records", "transactions"])]
         for c in count_like:
-            small = result_df[result_df[c] < 30]
-            if len(small) > 0:
+            if (result_df[c] < 30).any():
                 lowest = int(result_df[c].min())
                 messages.append(f"Some groups are small (one has only {lowest} rows). Percentages or averages on small groups are unstable, so treat those with caution.")
                 level = "yellow"
+                flagged = True
                 break
 
-        # --- Check 2: noise / closeness on rate-like columns across groups ---
+        # Check 2: closeness / noise on rate-like columns across groups
         rate_like = [c for c in numeric_cols if any(k in c.lower() for k in
                      ["rate", "pct", "percent", "ratio", "avg", "average", "conversion", "mean"])]
         if n_result_rows >= 2:
@@ -166,16 +165,17 @@ def verify_result(columns, rows, dataset_rows):
                 if len(vals) >= 2:
                     spread = vals.max() - vals.min()
                     scale = abs(vals.mean()) if vals.mean() != 0 else 1
-                    # relative spread under 5% => likely not meaningful
                     if scale > 0 and (spread / scale) < 0.05:
                         messages.append(f"The values in '{c}' are very close across groups (they differ by under 5%). A difference this small may be noise rather than a real effect. Verify with a significance test on the underlying counts before acting on it.")
                         level = "yellow"
+                        flagged = True
                         break
 
-        # --- Check 3: coverage note ---
-        messages.append(f"This result summarizes {n_result_rows} row(s) from a dataset of {dataset_rows:,} records.")
+        # Coverage note
+        unit = "group" if n_result_rows > 1 else "result"
+        messages.append(f"Based on {n_result_rows} {unit}(s) computed from {dataset_rows:,} records.")
 
-        if not any(m for m in messages if "small" in m or "close" in m):
+        if not flagged:
             messages.insert(0, "No reliability issues detected by the automated checks.")
 
     except Exception:
@@ -314,11 +314,11 @@ if "result" in st.session_state:
         st.markdown("### What this means")
         st.markdown(f'<div class="insight">{r["insight"]}</div>', unsafe_allow_html=True)
 
-if r.get("trust_level") and not r["error"]:
+    if r.get("trust_level") and not r["error"]:
         label = {"green": "Reliable", "yellow": "Use with caution", "red": "Unreliable"}[r["trust_level"]]
         meaning = {
             "green": "the automated checks found no obvious reasons to doubt this answer.",
-            "yellow": "the answer ran fine, but something about it (small groups or tiny differences) means you should double-check before acting on it.",
+            "yellow": "the answer ran fine, but something (small groups or tiny differences) means you should double-check before acting on it.",
             "red": "the answer could not be trusted as-is."
         }[r["trust_level"]]
         css = {"green": "trust-green", "yellow": "trust-yellow", "red": "trust-red"}[r["trust_level"]]
