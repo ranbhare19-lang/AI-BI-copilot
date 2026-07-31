@@ -23,6 +23,9 @@ st.markdown("""
         font-size: 0.9rem; font-weight: 600; margin-bottom: 26px; }
     .insight { background: rgba(29,158,117,0.08); border-left: 3px solid #1D9E75;
         border-radius: 6px; padding: 16px 18px; color: #D7E0E8; font-size: 1.05rem; margin-top: 8px; }
+    .trust-green { background: rgba(29,158,117,0.10); border-left: 3px solid #1D9E75; border-radius: 6px; padding: 14px 16px; color: #C7E8D5; font-size: 0.98rem; margin-top: 8px; }
+    .trust-yellow { background: rgba(230,180,40,0.10); border-left: 3px solid #E6B428; border-radius: 6px; padding: 14px 16px; color: #EFE0B0; font-size: 0.98rem; margin-top: 8px; }
+    .trust-red { background: rgba(200,60,60,0.10); border-left: 3px solid #C83C3C; border-radius: 6px; padding: 14px 16px; color: #F0C4C4; font-size: 0.98rem; margin-top: 8px; }
     div[data-testid="stTextInput"] input { background: #12161D; border: 1px solid #263039; border-radius: 12px;
         padding: 16px; font-size: 1.2rem; color: #E6EDF3; }
     div[data-testid="stTextInput"] input:focus { border-color: #1D9E75; box-shadow: 0 0 0 3px rgba(29,158,117,0.18); }
@@ -128,6 +131,59 @@ Question just asked: {question}
     return lines[:3]
 
 
+def verify_result(columns, rows, dataset_rows):
+    """Heuristic reliability checks. Returns (level, messages).
+    level is 'green', 'yellow', or 'red'. Never raises."""
+    messages = []
+    level = "green"
+    try:
+        if not rows or not columns:
+            return "red", ["No rows returned, so there is nothing to verify."]
+
+        result_df = pd.DataFrame(rows, columns=columns)
+        n_result_rows = len(result_df)
+
+        # Identify numeric columns
+        numeric_cols = result_df.select_dtypes(include="number").columns.tolist()
+
+        # --- Check 1: sample size (columns that look like counts) ---
+        count_like = [c for c in numeric_cols if any(k in c.lower() for k in
+                      ["count", "users", "num", "total", "freq", "n_", "_n", "records", "transactions"])]
+        for c in count_like:
+            small = result_df[result_df[c] < 30]
+            if len(small) > 0:
+                lowest = int(result_df[c].min())
+                messages.append(f"Some groups are small (one has only {lowest} rows). Percentages or averages on small groups are unstable, so treat those with caution.")
+                level = "yellow"
+                break
+
+        # --- Check 2: noise / closeness on rate-like columns across groups ---
+        rate_like = [c for c in numeric_cols if any(k in c.lower() for k in
+                     ["rate", "pct", "percent", "ratio", "avg", "average", "conversion", "mean"])]
+        if n_result_rows >= 2:
+            for c in rate_like:
+                vals = result_df[c].dropna().astype(float)
+                if len(vals) >= 2:
+                    spread = vals.max() - vals.min()
+                    scale = abs(vals.mean()) if vals.mean() != 0 else 1
+                    # relative spread under 5% => likely not meaningful
+                    if scale > 0 and (spread / scale) < 0.05:
+                        messages.append(f"The values in '{c}' are very close across groups (they differ by under 5%). A difference this small may be noise rather than a real effect. Verify with a significance test on the underlying counts before acting on it.")
+                        level = "yellow"
+                        break
+
+        # --- Check 3: coverage note ---
+        messages.append(f"This result summarizes {n_result_rows} row(s) from a dataset of {dataset_rows:,} records.")
+
+        if not any(m for m in messages if "small" in m or "close" in m):
+            messages.insert(0, "No reliability issues detected by the automated checks.")
+
+    except Exception:
+        return "green", ["Reliability checks could not run on this result."]
+
+    return level, messages
+
+
 def is_safe_sql(sql):
     lowered = sql.lower().strip()
     forbidden = ["drop", "delete", "update", "insert", "alter", "truncate", "create", "exec", "merge"]
@@ -163,7 +219,7 @@ else:
         df = pd.read_csv(uploaded)
 
 st.markdown('<p class="hero-title">AI BI Co-Pilot</p>', unsafe_allow_html=True)
-st.markdown('<p class="hero-sub">Ask a business question in plain English. The AI writes the SQL, runs it, and explains what it means.</p>', unsafe_allow_html=True)
+st.markdown('<p class="hero-sub">Ask a business question in plain English. The AI writes the SQL, runs it, explains what it means, and checks how reliable the answer is.</p>', unsafe_allow_html=True)
 
 if df is not None:
     cols = ", ".join(df.columns)
@@ -183,17 +239,18 @@ if st.button("Get Answer", key="get_answer_btn"):
     elif df is None:
         st.warning("Load the demo or upload a CSV first.")
     else:
-        with st.spinner("Writing SQL, querying the data, and interpreting the result..."):
+        with st.spinner("Writing SQL, querying, interpreting, and checking reliability..."):
             sql = question_to_sql(question, cols)
+            dataset_rows = len(df)
             if not is_safe_sql(sql):
                 result = {"sql": sql, "error": "Blocked: only read-only SELECT queries are allowed.",
-                          "columns": None, "rows": None, "insight": None, "question": question}
+                          "columns": None, "rows": None, "insight": None, "question": question,
+                          "trust_level": None, "trust_msgs": None}
             else:
                 try:
                     columns, rows = run_sql_csv(sql, df)
                     error = None
                 except Exception as e:
-                    # Self-correction: send the error back to the AI and retry once
                     try:
                         sql = fix_sql(question, cols, sql, str(e))
                         if is_safe_sql(sql):
@@ -209,11 +266,17 @@ if st.button("Get Answer", key="get_answer_btn"):
                         insight = business_insight(question, columns, rows)
                     except Exception:
                         insight = None
+                    try:
+                        trust_level, trust_msgs = verify_result(columns, rows, dataset_rows)
+                    except Exception:
+                        trust_level, trust_msgs = None, None
                     result = {"sql": sql, "error": None, "columns": columns, "rows": rows,
-                              "insight": insight, "question": question}
+                              "insight": insight, "question": question,
+                              "trust_level": trust_level, "trust_msgs": trust_msgs}
                 else:
                     result = {"sql": sql, "error": error, "columns": None, "rows": None,
-                              "insight": None, "question": question}
+                              "insight": None, "question": question,
+                              "trust_level": None, "trust_msgs": None}
         st.session_state["result"] = result
 
 if "result" in st.session_state:
@@ -250,6 +313,13 @@ if "result" in st.session_state:
     if r.get("insight") and not r["error"]:
         st.markdown("### What this means")
         st.markdown(f'<div class="insight">{r["insight"]}</div>', unsafe_allow_html=True)
+
+    if r.get("trust_level") and not r["error"]:
+        label = {"green": "Reliable", "yellow": "Use with caution", "red": "Unreliable"}[r["trust_level"]]
+        css = {"green": "trust-green", "yellow": "trust-yellow", "red": "trust-red"}[r["trust_level"]]
+        body = "<br>".join(r["trust_msgs"])
+        st.markdown("### Reliability check")
+        st.markdown(f'<div class="{css}"><b>{label}</b><br>{body}</div>', unsafe_allow_html=True)
 
     with st.expander("See the SQL the AI wrote"):
         st.code(r["sql"], language="sql")
