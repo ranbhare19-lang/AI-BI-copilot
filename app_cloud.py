@@ -314,12 +314,17 @@ if "result" in st.session_state:
         st.markdown("### What this means")
         st.markdown(f'<div class="insight">{r["insight"]}</div>', unsafe_allow_html=True)
 
-    if r.get("trust_level") and not r["error"]:
+if r.get("trust_level") and not r["error"]:
         label = {"green": "Reliable", "yellow": "Use with caution", "red": "Unreliable"}[r["trust_level"]]
+        meaning = {
+            "green": "the automated checks found no obvious reasons to doubt this answer.",
+            "yellow": "the answer ran fine, but something about it (small groups or tiny differences) means you should double-check before acting on it.",
+            "red": "the answer could not be trusted as-is."
+        }[r["trust_level"]]
         css = {"green": "trust-green", "yellow": "trust-yellow", "red": "trust-red"}[r["trust_level"]]
         body = "<br>".join(r["trust_msgs"])
         st.markdown("### Reliability check")
-        st.markdown(f'<div class="{css}"><b>{label}</b><br>{body}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="{css}"><b>{label}</b> — {meaning}<br><br>{body}</div>', unsafe_allow_html=True)
 
     with st.expander("See the SQL the AI wrote"):
         st.code(r["sql"], language="sql")
