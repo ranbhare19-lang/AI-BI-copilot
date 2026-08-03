@@ -69,6 +69,7 @@ Write a single DuckDB SQL query that answers the user's question. Use LIMIT not 
 Prefer LIKE with wildcards for text matching so partial names still match.
 When matching multi-word text, put % between the words (e.g. '%hip%hop%') so hyphens or spaces do not cause a miss.
 Group by only ONE dimension unless the user explicitly asks to break it down by several. Do not combine multiple groupings with UNION.
+When a term could map to more than one column, prefer the most direct status column. For "inactive users", use subscription_status = 'Inactive' unless the user specifies otherwise.
 Return ONLY the SQL query, no explanation, no markdown, no backticks.
 
 User question: {question}
@@ -116,6 +117,21 @@ interpret them. Plain language, no jargon.
     return resp.choices[0].message.content.strip()
 
 
+def explain_sql(sql):
+    prompt = f"""Explain this SQL query in one plain-English sentence a non-technical
+person would understand. Do not mention SQL keywords. Just say what it looks up.
+
+{sql}
+
+Return only the sentence.
+"""
+    resp = client.chat.completions.create(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def suggest_followups(question, columns):
     prompt = f"""The data has columns: {columns}
 Based on the question just asked, suggest exactly 3 short follow-up questions a
@@ -145,7 +161,6 @@ def verify_result(columns, rows, dataset_rows):
 
         flagged = False
 
-        # Check 1: small sample sizes on count-like columns
         count_like = [c for c in numeric_cols if any(k in c.lower() for k in
                       ["count", "users", "num", "total", "freq", "records", "transactions"])]
         for c in count_like:
@@ -156,7 +171,6 @@ def verify_result(columns, rows, dataset_rows):
                 flagged = True
                 break
 
-        # Check 2: closeness / noise on rate-like columns across groups
         rate_like = [c for c in numeric_cols if any(k in c.lower() for k in
                      ["rate", "pct", "percent", "ratio", "avg", "average", "conversion", "mean"])]
         if n_result_rows >= 2:
@@ -171,7 +185,6 @@ def verify_result(columns, rows, dataset_rows):
                         flagged = True
                         break
 
-        # Coverage note
         unit = "group" if n_result_rows > 1 else "result"
         messages.append(f"Based on {n_result_rows} {unit}(s) computed from {dataset_rows:,} records.")
 
@@ -245,7 +258,7 @@ if st.button("Get Answer", key="get_answer_btn"):
             if not is_safe_sql(sql):
                 result = {"sql": sql, "error": "Blocked: only read-only SELECT queries are allowed.",
                           "columns": None, "rows": None, "insight": None, "question": question,
-                          "trust_level": None, "trust_msgs": None}
+                          "plain_sql": None, "trust_level": None, "trust_msgs": None}
             else:
                 try:
                     columns, rows = run_sql_csv(sql, df)
@@ -267,15 +280,19 @@ if st.button("Get Answer", key="get_answer_btn"):
                     except Exception:
                         insight = None
                     try:
+                        plain_sql = explain_sql(sql)
+                    except Exception:
+                        plain_sql = None
+                    try:
                         trust_level, trust_msgs = verify_result(columns, rows, dataset_rows)
                     except Exception:
                         trust_level, trust_msgs = None, None
                     result = {"sql": sql, "error": None, "columns": columns, "rows": rows,
-                              "insight": insight, "question": question,
+                              "insight": insight, "question": question, "plain_sql": plain_sql,
                               "trust_level": trust_level, "trust_msgs": trust_msgs}
                 else:
                     result = {"sql": sql, "error": error, "columns": None, "rows": None,
-                              "insight": None, "question": question,
+                              "insight": None, "question": question, "plain_sql": None,
                               "trust_level": None, "trust_msgs": None}
         st.session_state["result"] = result
 
@@ -327,6 +344,8 @@ if "result" in st.session_state:
         st.markdown(f'<div class="{css}"><b>{label}</b> — {meaning}<br><br>{body}</div>', unsafe_allow_html=True)
 
     with st.expander("See the SQL the AI wrote"):
+        if r.get("plain_sql"):
+            st.caption(f"In plain English: {r['plain_sql']}")
         st.code(r["sql"], language="sql")
 
     if not r["error"] and cols:
